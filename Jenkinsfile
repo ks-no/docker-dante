@@ -1,11 +1,19 @@
 pipeline{
-    agent any
+    agent {
+        node {
+            label "linux-large||docker"
+        }
+    }
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 3, unit: 'HOURS')
+        buildDiscarder(logRotator(numToKeepStr: '40', artifactNumToKeepStr: '40')) 
+    }    
     environment {
         BUILDNR = "${env.BUILD_NUMBER}"
         GIT_SHA = sh(returnStdout: true, script: 'git rev-parse HEAD').substring(0, 7)
         WORKSPACE = pwd()
         CURRENT_VERSION = readFile "${env.WORKSPACE}/version"
-        DOCKER_IMAGE = ''
     }
     parameters {
         booleanParam(defaultValue: false, description: 'Skal prosjektet releases?', name: 'isRelease')
@@ -62,16 +70,16 @@ pipeline{
             }
         }
         stage("Docker build and push") {
+            environment {
+                IMAGE_NAME_WITH_TAG = "fiks-socks:${env.IMAGE_TAG}"
+                CONTEXT_NAME = "EDGE-$BUILD_NUMBER"
+            }
             steps {
-                script {
-                    def image = docker.build("fiks-socks:${env.IMAGE_TAG}")
-                    docker.withRegistry("https://${env.TARGET_REPO}.artifactory.fiks.ks.no/", 'artifactory-token-based')
-                    {
-                        image.push()
-                    }
-                    /* rtDockerPush(serverId: 'KS Artifactory',
-                    image: "${image}",
-                    targetRepo: "${env.TARGET_REPO}") */
+                withDockerRegistry(credentialsId: 'artifactory-token-based', url: "https://${env.TARGET_REPO}.artifactory.fiks.ks.no/") {
+                    sh(script: 'docker run --privileged --rm tonistiigi/binfmt --install all', label: 'Setup emulation')
+                    sh(script: "docker buildx create --name $CONTEXT_NAME --platform linux/amd64,linux/arm64 --bootstrap --use", label: 'Set up docker buildx environment')
+                    sh(script: "docker buildx build --platform linux/amd64,linux/arm64 --tag ${TARGET_REPO}.artifactory.fiks.ks.no/${IMAGE_NAME_WITH_TAG} --push --progress plain .", label: 'Bygg med docker buildx build')
+                    sh(script: "docker buildx rm $CONTEXT_NAME", returnStatus: true, label: "Cleanup")
                 }
             }
         }
